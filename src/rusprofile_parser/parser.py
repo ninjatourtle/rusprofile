@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import csv
-import json
 import re
 from pathlib import Path
 from typing import Iterable
@@ -9,6 +7,7 @@ from typing import Iterable
 from playwright.sync_api import BrowserContext, Locator, Page, TimeoutError, sync_playwright
 
 from .models import CompanyCandidate, CompanyResult
+from .output import append_result, prepare_output, write_results
 from .utils import extract_email, extract_website, first_date_after, load_cookies, parse_money_after, parse_proxy
 
 BASE_URL = "https://www.rusprofile.ru"
@@ -34,6 +33,9 @@ class RusprofileParser:
 
     def run(self, output: Path, limit: int | None = None) -> list[CompanyResult]:
         output.parent.mkdir(parents=True, exist_ok=True)
+        prepare_output(output)
+        results: list[CompanyResult] = []
+        self._log("Запускаю браузер")
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
                 headless=self.headless,
@@ -48,39 +50,59 @@ class RusprofileParser:
                     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
                 ),
             )
-            context.set_default_timeout(self.timeout_ms)
-            self._load_context_cookies(context)
-            page = context.new_page()
-            self._apply_filters(page)
-            candidates = self._collect_all_candidates(page, limit)
-            results = [self._inspect_company(context, candidate) for candidate in candidates]
-            self._write_results(output, results)
-            context.close()
-            browser.close()
-            return results
+            try:
+                context.set_default_timeout(self.timeout_ms)
+                self._load_context_cookies(context)
+                page = context.new_page()
+                self._apply_filters(page)
+                for candidate in self._iter_all_candidates(page, limit):
+                    self._log(f"Проверяю компанию: {candidate.name} ({candidate.url})")
+                    result = self._inspect_company(context, candidate)
+                    results.append(result)
+                    if result.matched:
+                        append_result(output, result)
+                        self._log(f"Подходит, сразу сохранил: {result.name}")
+                    else:
+                        self._log(f"Не подходит: {result.name}")
+            finally:
+                context.close()
+                browser.close()
+        matched = sum(1 for result in results if result.matched)
+        self._log(f"Готово. Проверено: {len(results)}, подходит: {matched}, файл: {output}")
+        return results
 
     def _load_context_cookies(self, context: BrowserContext) -> None:
         if not self.cookies or not self.cookies.exists():
+            self._log("Cookies не найдены, продолжаю без них")
             return
         data = load_cookies(self.cookies)
         if isinstance(data, dict):
-            context.add_cookies(data.get("cookies", []))
+            cookies = data.get("cookies", [])
         else:
-            context.add_cookies(data)
+            cookies = data
+        context.add_cookies(cookies)
+        self._log(f"Загрузил cookies: {len(cookies)} шт. из {self.cookies}")
 
     def _apply_filters(self, page: Page) -> None:
+        self._log(f"Открываю расширенный поиск: {SEARCH_URL}")
         page.goto(SEARCH_URL, wait_until="domcontentloaded")
         self._dismiss_overlays(page)
+        self._log("Выставляю статус: только действующие")
         self._set_status_active_only(page)
+        self._log("Выбираю ОКВЭД: 46.9")
         self._select_activity(page, "46.9")
+        self._log("Выбираю регион: Москва")
         self._select_region(page, "Москва")
+        self._log("Выставляю сотрудников: от 5")
         self._set_employee_min(page, "5")
+        self._log("Применяю фильтры")
         self._submit_filters(page)
 
     def _dismiss_overlays(self, page: Page) -> None:
         for text in ("Принять", "Понятно", "Согласен", "Закрыть"):
             button = page.get_by_text(text, exact=True)
             if self._visible(button):
+                self._log(f"Закрываю всплывающее окно: {text}")
                 button.first.click()
                 page.wait_for_timeout(300)
 
@@ -172,22 +194,33 @@ class RusprofileParser:
         elif required:
             raise RuntimeError("Не найдена кнопка 'Готово'")
 
-    def _collect_all_candidates(self, page: Page, limit: int | None) -> list[CompanyCandidate]:
+    def _iter_all_candidates(self, page: Page, limit: int | None) -> Iterable[CompanyCandidate]:
         seen: set[str] = set()
-        candidates: list[CompanyCandidate] = []
+        collected = 0
+        page_number = 1
         while True:
+            self._log(f"Считываю страницу выдачи №{page_number}")
             page.wait_for_load_state("domcontentloaded")
             page.wait_for_timeout(1000)
+            page_candidates = 0
             for candidate in self._extract_candidates(page):
                 if candidate.url in seen:
                     continue
                 seen.add(candidate.url)
-                candidates.append(candidate)
-                if limit and len(candidates) >= limit:
-                    return candidates
+                collected += 1
+                page_candidates += 1
+                self._log(f"Нашёл карточку #{collected}: {candidate.name}")
+                yield candidate
+                if limit and collected >= limit:
+                    self._log(f"Достигнут лимит: {limit}")
+                    return
+            self._log(f"На странице №{page_number} новых карточек: {page_candidates}")
             if not self._go_next_page(page):
                 break
-        return candidates
+            page_number += 1
+
+    def _collect_all_candidates(self, page: Page, limit: int | None) -> list[CompanyCandidate]:
+        return list(self._iter_all_candidates(page, limit))
 
     def _extract_candidates(self, page: Page) -> Iterable[CompanyCandidate]:
         links = page.locator('a[href^="/id/"], a[href*="/id/"]')
@@ -198,7 +231,9 @@ class RusprofileParser:
                 continue
             url = href if href.startswith("http") else f"{BASE_URL}{href}"
             text = link.inner_text().strip()
-            card_text = link.locator("xpath=ancestor::*[self::div or self::article or self::li][1]").inner_text(timeout=3000)
+            card_text = link.locator(
+                "xpath=ancestor::*[self::div or self::article or self::li][1]"
+            ).inner_text(timeout=3000)
             inn_match = re.search(r"ИНН\s*(\d+)", card_text)
             ogrn_match = re.search(r"ОГРН\s*(\d+)", card_text)
             name = text or card_text.splitlines()[0]
@@ -218,73 +253,82 @@ class RusprofileParser:
         ):
             control = page.locator(selector)
             if self._visible(control):
+                self._log("Перехожу к следующей странице выдачи")
                 before = page.url
                 control.first.click()
                 page.wait_for_timeout(1500)
                 if page.url != before:
                     page.wait_for_load_state("domcontentloaded")
                 return True
+        self._log("Следующей страницы нет")
         return False
 
     def _inspect_company(self, context: BrowserContext, candidate: CompanyCandidate) -> CompanyResult:
         page = context.new_page()
-        page.goto(candidate.url, wait_until="domcontentloaded")
-        page.wait_for_timeout(700)
-        text = page.locator("body").inner_text()
-        registration_date = first_date_after("Дата регистрации", text) or first_date_after("ОГРН", text)
-        appointment_date = first_date_after("назнач", text) or first_date_after("Руководитель", text)
-        revenue = parse_money_after("Выручка", text)
-        profit = parse_money_after("Прибыль", text) or parse_money_after("Чистая прибыль", text)
-        email = extract_email(text)
-        website = extract_website(text)
-        reasons: list[str] = []
-        if registration_date and appointment_date and registration_date == appointment_date:
-            reasons.append("дата регистрации совпадает с датой назначения руководителя")
-        if revenue is not None and revenue > 0:
-            reasons.append("выручка положительная")
-        if profit is not None and profit > 0:
-            reasons.append("прибыль положительная")
-        contacts_missing = not website and not email if self.require_both_missing_contacts else (not website or not email)
-        if contacts_missing:
-            reasons.append("нет сайта или почты" if not self.require_both_missing_contacts else "нет сайта и почты")
-        matched = bool(
-            contacts_missing
-            and registration_date
-            and appointment_date
-            and registration_date == appointment_date
-            and revenue is not None
-            and revenue > 0
-            and profit is not None
-            and profit > 0
-        )
-        page.close()
-        return CompanyResult(
-            name=candidate.name,
-            url=candidate.url,
-            inn=candidate.inn,
-            ogrn=candidate.ogrn,
-            registration_date=registration_date,
-            director_appointment_date=appointment_date,
-            revenue=revenue,
-            profit=profit,
-            email=email,
-            website=website,
-            matched=matched,
-            reasons=reasons,
-        )
+        try:
+            page.goto(candidate.url, wait_until="domcontentloaded")
+            page.wait_for_timeout(700)
+            text = page.locator("body").inner_text()
+            registration_date = first_date_after("Дата регистрации", text) or first_date_after("ОГРН", text)
+            appointment_date = first_date_after("назнач", text) or first_date_after("Руководитель", text)
+            revenue = parse_money_after("Выручка", text)
+            profit = parse_money_after("Прибыль", text) or parse_money_after("Чистая прибыль", text)
+            email = extract_email(text)
+            website = extract_website(text)
+            reasons: list[str] = []
+            if registration_date and appointment_date and registration_date == appointment_date:
+                reasons.append("дата регистрации совпадает с датой назначения руководителя")
+            if revenue is not None and revenue > 0:
+                reasons.append("выручка положительная")
+            if profit is not None and profit > 0:
+                reasons.append("прибыль положительная")
+            contacts_missing = (
+                not website and not email if self.require_both_missing_contacts else (not website or not email)
+            )
+            if contacts_missing:
+                reasons.append("нет сайта или почты" if not self.require_both_missing_contacts else "нет сайта и почты")
+            matched = bool(
+                contacts_missing
+                and registration_date
+                and appointment_date
+                and registration_date == appointment_date
+                and revenue is not None
+                and revenue > 0
+                and profit is not None
+                and profit > 0
+            )
+            self._log(
+                "Данные карточки: "
+                f"регистрация={registration_date or '-'}, назначение={appointment_date or '-'}, "
+                f"выручка={revenue if revenue is not None else '-'}, "
+                f"прибыль={profit if profit is not None else '-'}, "
+                f"email={email or '-'}, сайт={website or '-'}"
+            )
+            return CompanyResult(
+                name=candidate.name,
+                url=candidate.url,
+                inn=candidate.inn,
+                ogrn=candidate.ogrn,
+                registration_date=registration_date,
+                director_appointment_date=appointment_date,
+                revenue=revenue,
+                profit=profit,
+                email=email,
+                website=website,
+                matched=matched,
+                reasons=reasons,
+            )
+        finally:
+            page.close()
+
+    def _prepare_output(self, output: Path) -> None:
+        prepare_output(output)
+
+    def _append_result(self, output: Path, result: CompanyResult) -> None:
+        append_result(output, result)
 
     def _write_results(self, output: Path, results: list[CompanyResult]) -> None:
-        matched = [result for result in results if result.matched]
-        if output.suffix.lower() == ".csv":
-            with output.open("w", newline="", encoding="utf-8") as file:
-                writer = csv.DictWriter(file, fieldnames=list(CompanyResult.__dataclass_fields__.keys()))
-                writer.writeheader()
-                for result in matched:
-                    writer.writerow(result.to_dict())
-            return
-        with output.open("w", encoding="utf-8") as file:
-            for result in matched:
-                file.write(json.dumps(result.to_dict(), ensure_ascii=False) + "\n")
+        write_results(output, results)
 
     @staticmethod
     def _visible(locator: Locator) -> bool:
@@ -292,3 +336,7 @@ class RusprofileParser:
             return locator.count() > 0 and locator.first.is_visible(timeout=1000)
         except TimeoutError:
             return False
+
+    @staticmethod
+    def _log(message: str) -> None:
+        print(f"[rusprofile-parser] {message}", flush=True)

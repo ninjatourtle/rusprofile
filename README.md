@@ -45,7 +45,21 @@ rusprofile-parser --cookies data/cookies.json
 
 ## Запуск
 
-Прокси из задания уже задан как значение по умолчанию:
+Самый простой запуск использует прокси, `cookies.json` и `output/rusprofile_results.jsonl` по умолчанию:
+
+```bash
+rusprofile-parser
+```
+
+То же самое можно запустить без console-script, через модуль Python:
+
+```bash
+python -m rusprofile_parser
+```
+
+Парсер пишет в консоль текущий шаг работы и сохраняет каждую подходящую компанию сразу после проверки карточки, а не только в конце обхода.
+
+Если нужно явно указать cookies или файл результата:
 
 ```bash
 rusprofile-parser --cookies cookies.json --output output/rusprofile_results.jsonl
