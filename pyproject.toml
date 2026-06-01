@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rusprofile-parser"
+version = "0.1.0"
+description = "Playwright parser for rusprofile.ru advanced search"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "playwright>=1.44,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+]
+
+[project.scripts]
+rusprofile-parser = "rusprofile_parser.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

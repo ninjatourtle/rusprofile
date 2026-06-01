@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+cookies.json
+cookies.txt
+storage_state.json
+output/*.jsonl
+output/*.csv
