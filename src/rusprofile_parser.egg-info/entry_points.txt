@@ -1,0 +1,2 @@
+[console_scripts]
+rusprofile-parser = rusprofile_parser.cli:main

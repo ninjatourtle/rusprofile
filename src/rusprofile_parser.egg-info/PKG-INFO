@@ -1,3 +1,13 @@
+Metadata-Version: 2.4
+Name: rusprofile-parser
+Version: 0.1.0
+Summary: Playwright parser for rusprofile.ru advanced search
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: playwright<2,>=1.44
+Provides-Extra: dev
+Requires-Dist: pytest<9,>=8; extra == "dev"
+
 # rusprofile parser
 
 Playwright-парсер для расширенного поиска `rusprofile.ru`.
@@ -14,8 +24,7 @@ Playwright-парсер для расширенного поиска `rusprofile
 После этого он проходит все страницы выдачи, открывает карточку каждой компании и сохраняет только компании, у которых:
 
 - отсутствует сайт или почта;
-- рядом с руководителем нет плашки истории предыдущих руководителей;
-- в блоке арбитражных дел не больше 5 дел;
+- дата регистрации совпадает с датой назначения руководителя;
 - выручка положительная;
 - прибыль положительная.
 
@@ -35,7 +44,7 @@ python -m playwright install chromium
 По умолчанию парсер ищет `cookies.json`. Поддерживаются:
 
 - Playwright `storage_state.json`;
-- JSON-массив cookies из расширений браузера (EditThisCookie, Cookie-Editor и т.п.: `expirationDate`, `hostOnly`, `sameSite: no_restriction`);
+- JSON-массив cookies, экспортированный расширением браузера;
 - Netscape `cookies.txt`.
 
 Можно указать другой путь:
@@ -46,26 +55,7 @@ rusprofile-parser --cookies data/cookies.json
 
 ## Запуск
 
-Самый простой запуск использует прокси, `cookies.json` и `output/rusprofile_results.jsonl` по умолчанию:
-
-```bash
-run.bat
-```
-
-То же самое можно запустить через console-script или модуль Python:
-
-```bash
-rusprofile-parser
-python -m rusprofile_parser
-```
-
-Парсер пишет в консоль текущий шаг работы и сохраняет каждую подходящую компанию сразу после проверки карточки, а не только в конце обхода.
-При каждом запуске создаются новые файлы с датой и временем в имени, например `output/rusprofile_results_20260606_143015.jsonl`.
-Все проверенные компании дополнительно пишутся в уникальный CSV, например `output/rusprofile_all_results_20260606_143015.csv`.
-Если у компании найден сайт, парсер выделяет домен и проверяет его статус: `registered`, `available` или `unknown`.
-При запуске через `run.bat` окно консоли остается открытым после завершения или ошибки, чтобы можно было прочитать лог.
-
-Если нужно явно указать cookies или файл результата:
+Прокси из задания уже задан как значение по умолчанию:
 
 ```bash
 rusprofile-parser --cookies cookies.json --output output/rusprofile_results.jsonl

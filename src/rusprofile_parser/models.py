@@ -18,11 +18,15 @@ class CompanyResult:
     inn: str | None
     ogrn: str | None
     registration_date: str | None
-    director_appointment_date: str | None
+    director_since: str | None
+    has_ceo_history: bool
+    arbitr_cases_count: int
     revenue: int | None
     profit: int | None
     email: str | None
     website: str | None
+    website_domain: str | None
+    website_domain_status: str | None
     matched: bool
     reasons: list[str]
 

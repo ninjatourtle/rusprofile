@@ -1,0 +1,4 @@
+playwright<2,>=1.44
+
+[dev]
+pytest<9,>=8
